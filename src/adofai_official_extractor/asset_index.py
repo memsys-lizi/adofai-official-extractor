@@ -14,6 +14,7 @@ class AssetRecord:
     path: Path
     project_relative_path: str
     script_name: str | None = None
+    sprite_pixels_per_unit: float = 100.0
 
 
 class AssetIndex:
@@ -50,12 +51,15 @@ class AssetIndex:
             if meta_path.name.endswith(".cs.meta"):
                 script_name = meta_path.name[: -len(".cs.meta")]
                 self.script_name_by_guid[guid] = script_name
+            ppu_match = re.search(r"^\s*spritePixelsToUnits:\s*([0-9.]+)\s*$", text, re.MULTILINE)
+            sprite_pixels_per_unit = float(ppu_match.group(1)) if ppu_match else 100.0
 
             self.by_guid[guid] = AssetRecord(
                 guid=guid,
                 path=asset_path,
                 project_relative_path=rel_path,
                 script_name=script_name,
+                sprite_pixels_per_unit=sprite_pixels_per_unit,
             )
 
     def get(self, guid: str | None) -> AssetRecord | None:

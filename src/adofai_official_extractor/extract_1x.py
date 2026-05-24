@@ -73,6 +73,19 @@ def world_to_ado_units(value: float) -> float:
     return round_value(value / OLD_TILE_SIZE)
 
 
+def old_parallax_to_modern_multiplier(value: float) -> float:
+    if abs(value - 1.0) < 0.00001:
+        return 0.99
+    return value
+
+
+def old_world_to_modern_parallax_position(value: float, multiplier: float) -> float:
+    modern_multiplier = old_parallax_to_modern_multiplier(multiplier)
+    if abs(modern_multiplier) < 0.00001:
+        return value
+    return value / (1.0 - modern_multiplier)
+
+
 def enabled(value: bool) -> str:
     return "Enabled" if value else "Disabled"
 
@@ -249,18 +262,20 @@ def first_script_in_ancestors(scene: UnityScene, go_id: int, script_name: str) -
     return None
 
 
-def inherited_parallax(scene: UnityScene, go_id: int, report: ConversionReport) -> tuple[list[float], str]:
+def inherited_parallax(scene: UnityScene, go_id: int, report: ConversionReport) -> tuple[list[float], tuple[float, float], str]:
     parallax = first_script_in_ancestors(scene, go_id, "scrParallax")
     if not parallax:
-        return [0, 0], "Global"
-    x = 0.0 if parallax.data.get("dontalter_x") else safe_float(parallax.data.get("multiplier_x"), 0.0) * 100.0
-    y = 0.0 if parallax.data.get("dontalter_y") else safe_float(parallax.data.get("multiplier_y"), 0.0) * 100.0
+        return [0, 0], (0.0, 0.0), "Global"
+    old_x = 0.0 if parallax.data.get("dontalter_x") else safe_float(parallax.data.get("multiplier_x"), 0.0)
+    old_y = 0.0 if parallax.data.get("dontalter_y") else safe_float(parallax.data.get("multiplier_y"), 0.0)
+    x = old_parallax_to_modern_multiplier(old_x) * 100.0
+    y = old_parallax_to_modern_multiplier(old_y) * 100.0
     relative_to = "Camera" if parallax.data.get("relativeToCamera") else "Global"
     if parallax.data.get("clampToScreen"):
         relative_to = "CameraAspect"
         path = scene.path_for_gameobject(scene.component_gameobject_id(parallax))
         report.add("Decoration mapping", f"{path} 使用 clampToScreen，已近似为 relativeTo: CameraAspect。")
-    return [round_value(x), round_value(y)], relative_to
+    return [round_value(x), round_value(y)], (old_x, old_y), relative_to
 
 
 def inherited_camera_lock(scene: UnityScene, go_id: int) -> tuple[bool, bool, bool]:
@@ -319,20 +334,25 @@ def extract_decorations(
         image_by_go[go_id] = copied_name
         r, g, b, a = color(renderer.data.get("m_Color"))
         sorting_order = int(renderer.data.get("m_SortingOrder", 0) or 0)
-        parallax, relative_to = inherited_parallax(scene, go_id, report)
+        parallax, old_parallax, relative_to = inherited_parallax(scene, go_id, report)
         lock_pos, lock_rot, lock_scale = inherited_camera_lock(scene, go_id)
         if lock_pos:
             relative_to = "Camera"
+        export_world_x = old_world_to_modern_parallax_position(world.x, old_parallax[0])
+        export_world_y = old_world_to_modern_parallax_position(world.y, old_parallax[1])
+        scale_multiplier = 100.0 / max(asset.sprite_pixels_per_unit if asset else 100.0, 0.001)
+        scale_x = world.scale_x * 100.0 * scale_multiplier * (-1.0 if renderer.data.get("m_FlipX") else 1.0)
+        scale_y = world.scale_y * 100.0 * scale_multiplier * (-1.0 if renderer.data.get("m_FlipY") else 1.0)
         decorations.append(
             {
                 "floor": 0,
                 "eventType": "AddDecoration",
                 "decorationImage": copied_name,
-                "position": [world_to_ado_units(world.x), world_to_ado_units(world.y)],
+                "position": [world_to_ado_units(export_world_x), world_to_ado_units(export_world_y)],
                 "relativeTo": relative_to,
                 "pivotOffset": [0, 0],
                 "rotation": normalize_angle(world.rotation_z),
-                "scale": [round_value(world.scale_x * 100), round_value(world.scale_y * 100)],
+                "scale": [round_value(scale_x), round_value(scale_y)],
                 "tile": [1, 1],
                 "color": f"{clamp_byte(r):02x}{clamp_byte(g):02x}{clamp_byte(b):02x}",
                 "opacity": round_value(a * 100),
@@ -353,7 +373,7 @@ def extract_decorations(
         if len(decorations) <= 40 and (parallax != [0, 0] or relative_to != "Global" or abs(world.rotation_z) > 0.001):
             report.add(
                 "Decoration mapping",
-                f"{path}: relativeTo={relative_to}, parallax={parallax}, UnityPos=({round_value(world.x)},{round_value(world.y)}) -> exportPos=({world_to_ado_units(world.x)},{world_to_ado_units(world.y)}), UnityRot={round_value(world.rotation_z)} -> exportRot={normalize_angle(world.rotation_z)}",
+                f"{path}: relativeTo={relative_to}, oldParallax=({round_value(old_parallax[0])},{round_value(old_parallax[1])}), exportParallax={parallax}, UnityPos=({round_value(world.x)},{round_value(world.y)}) -> exportPos=({world_to_ado_units(export_world_x)},{world_to_ado_units(export_world_y)}), UnityRot={round_value(world.rotation_z)} -> exportRot={normalize_angle(world.rotation_z)}",
             )
     return decorations, tag_by_go, image_by_go
 

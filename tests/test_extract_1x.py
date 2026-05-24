@@ -11,6 +11,8 @@ from adofai_official_extractor.extract_1x import (
     extract,
     find_one,
     floor_speeds_from_scene,
+    old_parallax_to_modern_multiplier,
+    old_world_to_modern_parallax_position,
     visible_path_from_old_data,
 )
 from adofai_official_extractor.unity_scene import UnityScene
@@ -77,3 +79,13 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert "禁用状态的相机后处理组件" in report
     assert "速度映射" in report
     assert "音乐和背景" in report
+
+
+def test_old_parallax_position_is_inverted_for_modern_decorations() -> None:
+    old_position = 13.77655
+    old_multiplier = 0.5
+    exported_position = old_world_to_modern_parallax_position(old_position, old_multiplier)
+    modern_multiplier = old_parallax_to_modern_multiplier(old_multiplier)
+
+    assert round(exported_position * (1 - modern_multiplier), 5) == old_position
+    assert old_parallax_to_modern_multiplier(1.0) == 0.99
