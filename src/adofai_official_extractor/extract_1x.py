@@ -10,7 +10,7 @@ from typing import Any
 
 from .adofai_writer import copy_asset, write_adofai
 from .asset_index import AssetIndex, AssetRecord
-from .profiles import PROFILE_1X, PROFILES, LevelProfile
+from .profiles import PROFILE_1X, PROFILE_GROUPS, PROFILES, LevelProfile
 from .report import ConversionReport
 from .unity_scene import UnityObject, UnityScene, color, ref_id, vec3
 
@@ -194,7 +194,7 @@ def base_settings(
     song = caption
     if " " in caption:
         maybe_id, maybe_title = caption.split(" ", 1)
-        if maybe_id.endswith("-X"):
+        if maybe_id == profile.level_id or re.fullmatch(r"\d+-(?:\d+|X)", maybe_id):
             song = maybe_title
     return {
         "version": 6,
@@ -1109,23 +1109,40 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract old official Unity scene-based ADOFAI levels to vanilla .adofai.")
-    parser.add_argument("--level", default=PROFILE_1X.level_id, choices=sorted(PROFILES), help="Official level profile to export.")
+    parser.add_argument(
+        "--level",
+        default=PROFILE_1X.level_id,
+        help="Official level profile to export, or a profile group such as tutorials-1.",
+    )
     parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT, help="Unity project root.")
     parser.add_argument("--scene", type=Path, default=None, help="Scene path. Defaults to the selected profile scene.")
     parser.add_argument("--out", type=Path, default=None, help="Output level folder.")
     return parser.parse_args()
 
 
+def resolve_profiles(level: str) -> list[LevelProfile]:
+    if level in PROFILES:
+        return [PROFILES[level]]
+    if level in PROFILE_GROUPS:
+        return [PROFILES[level_id] for level_id in PROFILE_GROUPS[level]]
+    known = ", ".join(sorted([*PROFILES, *PROFILE_GROUPS]))
+    raise SystemExit(f"Unknown --level {level!r}. Known profiles/groups: {known}")
+
+
 def main() -> None:
     args = parse_args()
-    profile = PROFILES[args.level]
-    output_dir = args.out or Path("exports") / profile.level_id
-    result = extract_with_profile(profile, args.project, args.scene, output_dir)
-    print(f"Wrote {output_dir / 'main.adofai'}")
-    print(f"Floors/path chars: {result.floor_count}")
-    print(f"Decorations: {len(result.level['decorations'])}")
-    print(f"Actions: {len(result.level['actions'])}")
-    print(f"Report: {output_dir / 'conversion_report.md'}")
+    profiles = resolve_profiles(args.level)
+    if args.scene and len(profiles) > 1:
+        raise SystemExit("--scene can only be used when exporting a single profile.")
+    base_output_dir = args.out or Path("exports") / args.level
+    for profile in profiles:
+        output_dir = base_output_dir if len(profiles) == 1 else base_output_dir / profile.level_id
+        result = extract_with_profile(profile, args.project, args.scene, output_dir)
+        print(f"Wrote {output_dir / 'main.adofai'}")
+        print(f"Floors/path chars: {result.floor_count}")
+        print(f"Decorations: {len(result.level['decorations'])}")
+        print(f"Actions: {len(result.level['actions'])}")
+        print(f"Report: {output_dir / 'conversion_report.md'}")
 
 
 if __name__ == "__main__":

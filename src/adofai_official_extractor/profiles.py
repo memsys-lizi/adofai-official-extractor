@@ -23,6 +23,22 @@ PROFILE_1X = LevelProfile(
     level_tags="official,extracted,experimental,1-X",
 )
 
+TUTORIAL_1_PROFILES = tuple(
+    LevelProfile(
+        level_id=f"1-{index}",
+        scene_rel=Path("Assets") / "scenes" / "Levels" / f"1-{index}.unity",
+        default_caption=f"1-{index}",
+        level_desc=f"Extracted from the old Unity scene-based official 1-{index} tutorial level.",
+        level_tags=f"official,extracted,experimental,1-X,tutorial,1-{index}",
+    )
+    for index in range(1, 7)
+)
+
 PROFILES = {
+    **{profile.level_id: profile for profile in TUTORIAL_1_PROFILES},
     PROFILE_1X.level_id: PROFILE_1X,
+}
+
+PROFILE_GROUPS = {
+    "tutorials-1": tuple(profile.level_id for profile in TUTORIAL_1_PROFILES),
 }

@@ -13,9 +13,10 @@ from adofai_official_extractor.extract_1x import (
     floor_speeds_from_scene,
     old_parallax_to_modern_multiplier,
     old_world_to_modern_parallax_position,
+    resolve_profiles,
     visible_path_from_old_data,
 )
-from adofai_official_extractor.profiles import PROFILE_1X, PROFILES
+from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_GROUPS, PROFILES
 from adofai_official_extractor.unity_scene import UnityScene
 
 
@@ -39,6 +40,8 @@ def test_1x_profile_drives_default_scene() -> None:
     assert PROFILES["1-X"] is PROFILE_1X
     assert DEFAULT_SCENE_REL == PROFILE_1X.scene_rel
     assert PROFILE_1X.tile_shape == "Short"
+    assert PROFILE_GROUPS["tutorials-1"] == ("1-1", "1-2", "1-3", "1-4", "1-5", "1-6")
+    assert [profile.level_id for profile in resolve_profiles("tutorials-1")] == list(PROFILE_GROUPS["tutorials-1"])
 
 
 def test_world_transform_projects_3d_chain_hierarchy() -> None:
