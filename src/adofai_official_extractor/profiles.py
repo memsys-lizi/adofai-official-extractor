@@ -42,10 +42,19 @@ PROFILE_2X = LevelProfile(
     level_tags="official,extracted,experimental,2-X",
 )
 
+PROFILE_3X = LevelProfile(
+    level_id="3-X",
+    scene_rel=Path("Assets") / "scenes" / "Levels" / "3-X.unity",
+    default_caption="3-X The Wind-Up",
+    level_desc="Extracted from the old Unity scene-based official 3-X level.",
+    level_tags="official,extracted,experimental,3-X",
+)
+
 PROFILES = {
     **{profile.level_id: profile for profile in TUTORIAL_1_PROFILES},
     PROFILE_1X.level_id: PROFILE_1X,
     PROFILE_2X.level_id: PROFILE_2X,
+    PROFILE_3X.level_id: PROFILE_3X,
 }
 
 PROFILE_GROUPS = {

@@ -17,7 +17,8 @@ from adofai_official_extractor.converter import (
 )
 from adofai_official_extractor.extract_1x import extract
 from adofai_official_extractor.extract_2x import extract as extract_2x
-from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_2X, PROFILE_GROUPS, PROFILES
+from adofai_official_extractor.extract_3x import extract as extract_3x
+from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_2X, PROFILE_3X, PROFILE_GROUPS, PROFILES
 from adofai_official_extractor.unity_scene import UnityScene
 
 
@@ -40,6 +41,7 @@ def test_old_level_path_counts() -> None:
 def test_1x_profile_drives_default_scene() -> None:
     assert PROFILES["1-X"] is PROFILE_1X
     assert PROFILES["2-X"] is PROFILE_2X
+    assert PROFILES["3-X"] is PROFILE_3X
     assert DEFAULT_SCENE_REL == PROFILE_1X.scene_rel
     assert PROFILE_1X.tile_shape == "Short"
     assert PROFILE_GROUPS["tutorials-1"] == ("1-1", "1-2", "1-3", "1-4", "1-5", "1-6")
@@ -62,6 +64,21 @@ def test_2x_old_speed_and_icon_modifiers_do_not_create_path_floors() -> None:
     assert old_path.count("O") == 2
     assert len(path_data) == 145
     assert len(level_maker.data["listFloors"]) == 146
+
+
+def test_3x_legacy_scene_markers_do_not_create_path_floors() -> None:
+    asset_index = AssetIndex.build(DEFAULT_PROJECT)
+    scene = UnityScene.load(DEFAULT_PROJECT / PROFILE_3X.scene_rel, asset_index)
+    level_maker = find_one(scene, "scrLevelMaker")
+
+    old_path = clean_old_path(level_maker.data["leveldata"])
+
+    assert len(old_path) == 164
+    assert "H0" in old_path
+    assert "H9" in old_path
+    assert len(visible_path_from_old_data(old_path)) == 163
+    assert len(old_path.replace("H0", "").replace("H9", "")) == 160
+    assert len(level_maker.data["listFloors"]) == 161
 
 
 def test_world_transform_projects_3d_chain_hierarchy() -> None:
@@ -207,6 +224,49 @@ def test_extract_2x_uses_hand_rules_not_script_sampling(tmp_path: Path) -> None:
     assert "跳过脚本驱动装饰动画" in report
     assert "2-X 轨道贴图" in report
     assert "scrFloor.rotatecamera" in report
+
+
+def test_extract_3x_uses_dedicated_scene_switch_rules(tmp_path: Path) -> None:
+    out_dir = tmp_path / "3-X"
+    result = extract_3x(DEFAULT_PROJECT, None, out_dir)
+    level_path = out_dir / "main.adofai"
+
+    assert level_path.exists()
+    level = json.loads(level_path.read_text(encoding="utf-8"))
+    event_types = {event["eventType"] for event in level["actions"]}
+
+    assert level["pathData"] == result.level["pathData"]
+    assert len(level["pathData"]) == 160
+    assert len(level["decorations"]) == 19
+    assert level["settings"]["songFilename"] == "3-X.ogg"
+    assert level["settings"]["trackTexture"] == "tiles_world1_grid.png"
+    assert level["settings"]["trackColor"] == "ffffff"
+    assert (out_dir / "3-X.ogg").exists()
+    assert (out_dir / "tiles_world1_grid.png").exists()
+    assert {"Flash", "CustomBackground", "MoveDecorations"}.issubset(event_types)
+    assert "SetSpeed" not in event_types
+    assert "MoveCamera" not in event_types
+
+    group_tags = " ".join(str(decoration["tag"]) for decoration in level["decorations"])
+    assert "world3_no_crystals" in group_tags
+    assert "world3_purple" in group_tags
+    assert "world3_crystals" in group_tags
+    assert any("world3_purple" in decoration["tag"] and decoration["opacity"] == 0 for decoration in level["decorations"])
+    assert any("world3_crystals" in decoration["tag"] and decoration["opacity"] == 0 for decoration in level["decorations"])
+
+    switch_events = [event for event in level["actions"] if event.get("eventTag") == "3-X ffxCallFunction SetActive"]
+    assert len(switch_events) >= 20
+    assert {event["floor"] for event in switch_events} == {33, 97, 160}
+    assert not any("scrScroller" in str(event.get("eventTag", "")) for event in level["actions"])
+
+    image_names = {item.name for item in out_dir.iterdir() if item.suffix.lower() in {".png", ".jpg", ".jpeg"}}
+    assert all(str(dec["decorationImage"]) in image_names for dec in level["decorations"])
+
+    report = (out_dir / "conversion_report.md").read_text(encoding="utf-8")
+    assert "删除旧场景标记 H0/H9" in report
+    assert "ffxCallFunction" in report
+    assert "跳过脚本驱动/音量驱动动画" in report
+    assert "3-X 轨道贴图" in report
 
 
 def test_old_parallax_position_is_inverted_for_modern_decorations() -> None:

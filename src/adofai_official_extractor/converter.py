@@ -95,6 +95,9 @@ class DecorationExport:
 
 
 class LevelConversionHooks:
+    def path_data(self, old_path_raw: str, scene: UnityScene, report: ConversionReport) -> str:
+        return visible_path_from_old_data(old_path_raw)
+
     def adjust_decoration(
         self,
         scene: UnityScene,
@@ -1184,7 +1187,7 @@ def extract_with_profile(
     conductor = find_one(scene, "scrConductor")
 
     old_path_raw = clean_old_path(str(level_maker.data.get("leveldata") or ""))
-    path_data = visible_path_from_old_data(old_path_raw)
+    path_data = hooks.path_data(old_path_raw, scene, report)
     floor_lookup = build_floor_lookup(scene, level_maker)
     bpm = safe_float(conductor.data.get("bpm"), 150.0)
     offset_seconds = safe_float(conductor.data.get("addoffset"), 0.0)
