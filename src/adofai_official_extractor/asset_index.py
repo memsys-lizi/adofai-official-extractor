@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import struct
 
 
 GUID_RE = re.compile(r"^guid:\s*([0-9a-f]+)\s*$", re.MULTILINE)
@@ -15,6 +16,8 @@ class AssetRecord:
     project_relative_path: str
     script_name: str | None = None
     sprite_pixels_per_unit: float = 100.0
+    sprite_pivot: tuple[float, float] = (0.5, 0.5)
+    pixel_size: tuple[int, int] | None = None
 
 
 class AssetIndex:
@@ -53,6 +56,14 @@ class AssetIndex:
                 self.script_name_by_guid[guid] = script_name
             ppu_match = re.search(r"^\s*spritePixelsToUnits:\s*([0-9.]+)\s*$", text, re.MULTILINE)
             sprite_pixels_per_unit = float(ppu_match.group(1)) if ppu_match else 100.0
+            pivot_match = re.search(
+                r"^\s*spritePivot:\s*\{x:\s*([-0-9.]+),\s*y:\s*([-0-9.]+)\}\s*$",
+                text,
+                re.MULTILINE,
+            )
+            sprite_pivot = (
+                (float(pivot_match.group(1)), float(pivot_match.group(2))) if pivot_match else (0.5, 0.5)
+            )
 
             self.by_guid[guid] = AssetRecord(
                 guid=guid,
@@ -60,6 +71,8 @@ class AssetIndex:
                 project_relative_path=rel_path,
                 script_name=script_name,
                 sprite_pixels_per_unit=sprite_pixels_per_unit,
+                sprite_pivot=sprite_pivot,
+                pixel_size=png_size(asset_path),
             )
 
     def get(self, guid: str | None) -> AssetRecord | None:
@@ -71,3 +84,16 @@ class AssetIndex:
         if not guid:
             return None
         return self.script_name_by_guid.get(guid)
+
+
+def png_size(path: Path) -> tuple[int, int] | None:
+    if path.suffix.lower() != ".png":
+        return None
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(24)
+    except OSError:
+        return None
+    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", header[16:24])

@@ -34,6 +34,21 @@ def test_old_level_path_counts() -> None:
     assert speeds[161:] == [0.25] * 7
 
 
+def test_world_transform_projects_3d_chain_hierarchy() -> None:
+    asset_index = AssetIndex.build(DEFAULT_PROJECT)
+    scene = UnityScene.load(DEFAULT_PROJECT / DEFAULT_SCENE_REL, asset_index)
+    go_id = next(
+        obj.file_id
+        for obj in scene.by_class("GameObject")
+        if scene.path_for_gameobject(obj.file_id) == "BG/BG Moving/chain_b_new/chain_enhance (153)"
+    )
+    world = scene.world_transform_for_gameobject(go_id)
+
+    assert abs(world.x - 130.27003) < 0.001
+    assert abs(world.y + 5.34901) < 0.001
+    assert abs(world.rotation_z - 30.22518) < 0.001
+
+
 def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     out_dir = tmp_path / "1-X"
     result = extract(DEFAULT_PROJECT, None, out_dir)
@@ -51,6 +66,7 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert len(level["pathData"]) == 167
     assert len(level["decorations"]) > 100
     assert level["settings"]["songFilename"] == "1-X.ogg"
+    assert level["settings"]["tileShape"] == "Short"
     assert level["settings"]["bgImage"] == ""
     assert level["settings"]["backgroundColor"] == "250f33"
     assert (out_dir / level["settings"]["songFilename"]).exists()
@@ -73,6 +89,10 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert any(dec["parallax"] != [0, 0] for dec in level["decorations"])
     assert any(dec["relativeTo"] != "Global" or dec["parallax"] != [0, 0] for dec in level["decorations"])
     assert sum(1 for event in level["actions"] if event["floor"] == 0 and event["eventType"] == "MoveDecorations") == 0
+    statue = next(dec for dec in level["decorations"] if dec["decorationImage"] == "world1_statue_enhance_lowres.png")
+    assert abs(statue["position"][0] - 155.51) < 0.01
+    assert abs(statue["pivotOffset"][0] - 0.00513) < 0.001
+    assert abs(statue["pivotOffset"][1] + 0.02065) < 0.001
 
     report = report_path.read_text(encoding="utf-8")
     assert "暂未精确还原后处理条目数: 0" in report

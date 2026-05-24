@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import atan2, cos, degrees, radians, sin
+from math import atan2, degrees, sqrt
 from pathlib import Path
 import re
 from typing import Any, Iterable
@@ -32,6 +32,7 @@ class WorldTransform:
     scale_x: float
     scale_y: float
     scale_z: float
+    shear: float = 0.0
 
 
 def ref_id(value: Any) -> int | None:
@@ -63,17 +64,65 @@ def color(value: Any) -> tuple[float, float, float, float]:
     )
 
 
-def quat_to_z_degrees(value: Any) -> float:
+def quat(value: Any) -> tuple[float, float, float, float]:
     if not isinstance(value, dict):
-        return 0.0
-    x = float(value.get("x", 0.0) or 0.0)
-    y = float(value.get("y", 0.0) or 0.0)
-    z = float(value.get("z", 0.0) or 0.0)
-    w = float(value.get("w", 1.0) or 1.0)
-    # ZYX Euler extraction, enough for these 2D scene objects.
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-    return degrees(atan2(siny_cosp, cosy_cosp))
+        return (0.0, 0.0, 0.0, 1.0)
+    return (
+        float(value.get("x", 0.0) or 0.0),
+        float(value.get("y", 0.0) or 0.0),
+        float(value.get("z", 0.0) or 0.0),
+        float(value.get("w", 1.0) or 1.0),
+    )
+
+
+def quat_matrix(value: Any) -> list[list[float]]:
+    x, y, z, w = quat(value)
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return [
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ]
+
+
+def local_matrix(position: tuple[float, float, float], rotation: Any, scale: tuple[float, float, float]) -> list[list[float]]:
+    rot = quat_matrix(rotation)
+    return [
+        [rot[0][0] * scale[0], rot[0][1] * scale[1], rot[0][2] * scale[2], position[0]],
+        [rot[1][0] * scale[0], rot[1][1] * scale[1], rot[1][2] * scale[2], position[1]],
+        [rot[2][0] * scale[0], rot[2][1] * scale[1], rot[2][2] * scale[2], position[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def matmul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    return [[sum(a[row][k] * b[k][col] for k in range(4)) for col in range(4)] for row in range(4)]
+
+
+def matrix_to_world(matrix: list[list[float]]) -> WorldTransform:
+    x_axis = (matrix[0][0], matrix[1][0])
+    y_axis = (matrix[0][1], matrix[1][1])
+    scale_x = sqrt(x_axis[0] * x_axis[0] + x_axis[1] * x_axis[1])
+    scale_y = sqrt(y_axis[0] * y_axis[0] + y_axis[1] * y_axis[1])
+    det = x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0]
+    if det < 0:
+        scale_y = -scale_y
+    shear = 0.0
+    denom = abs(scale_x * scale_y)
+    if denom > 0.00001:
+        shear = (x_axis[0] * y_axis[0] + x_axis[1] * y_axis[1]) / denom
+    return WorldTransform(
+        matrix[0][3],
+        matrix[1][3],
+        matrix[2][3],
+        degrees(atan2(x_axis[1], x_axis[0])) if scale_x > 0.00001 else 0.0,
+        scale_x,
+        scale_y,
+        sqrt(matrix[0][2] * matrix[0][2] + matrix[1][2] * matrix[1][2] + matrix[2][2] * matrix[2][2]),
+        shear,
+    )
 
 
 class UnityScene:
@@ -83,6 +132,7 @@ class UnityScene:
         self.objects: dict[int, UnityObject] = {}
         self._gameobject_to_transform: dict[int, int] = {}
         self._world_cache: dict[int, WorldTransform] = {}
+        self._matrix_cache: dict[int, list[list[float]]] = {}
 
     @classmethod
     def load(cls, path: str | Path, asset_index: AssetIndex) -> "UnityScene":
@@ -213,32 +263,23 @@ class UnityScene:
     def world_transform(self, transform_id: int) -> WorldTransform:
         if transform_id in self._world_cache:
             return self._world_cache[transform_id]
+        world = matrix_to_world(self.world_matrix(transform_id))
+        self._world_cache[transform_id] = world
+        return world
+
+    def world_matrix(self, transform_id: int) -> list[list[float]]:
+        if transform_id in self._matrix_cache:
+            return self._matrix_cache[transform_id]
         transform = self.objects[transform_id]
         local_pos = vec3(transform.data.get("m_LocalPosition"))
         local_scale = vec3(transform.data.get("m_LocalScale"), (1.0, 1.0, 1.0))
-        euler_hint = vec3(transform.data.get("m_LocalEulerAnglesHint"))
-        local_rot = euler_hint[2] if any(abs(v) > 0.00001 for v in euler_hint) else quat_to_z_degrees(transform.data.get("m_LocalRotation"))
+        local = local_matrix(local_pos, transform.data.get("m_LocalRotation"), local_scale)
 
         parent_id = ref_id(transform.data.get("m_Father"))
         if parent_id is None or parent_id not in self.objects:
-            world = WorldTransform(*local_pos, local_rot, *local_scale)
-            self._world_cache[transform_id] = world
-            return world
+            self._matrix_cache[transform_id] = local
+            return local
 
-        parent = self.world_transform(parent_id)
-        scaled_x = local_pos[0] * parent.scale_x
-        scaled_y = local_pos[1] * parent.scale_y
-        angle = radians(parent.rotation_z)
-        rotated_x = scaled_x * cos(angle) - scaled_y * sin(angle)
-        rotated_y = scaled_x * sin(angle) + scaled_y * cos(angle)
-        world = WorldTransform(
-            parent.x + rotated_x,
-            parent.y + rotated_y,
-            parent.z + local_pos[2] * parent.scale_z,
-            parent.rotation_z + local_rot,
-            parent.scale_x * local_scale[0],
-            parent.scale_y * local_scale[1],
-            parent.scale_z * local_scale[2],
-        )
-        self._world_cache[transform_id] = world
+        world = matmul(self.world_matrix(parent_id), local)
+        self._matrix_cache[transform_id] = world
         return world

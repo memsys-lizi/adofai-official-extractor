@@ -8,14 +8,14 @@ import shutil
 from typing import Any
 
 from .adofai_writer import copy_asset, write_adofai
-from .asset_index import AssetIndex
+from .asset_index import AssetIndex, AssetRecord
 from .report import ConversionReport
 from .unity_scene import UnityObject, UnityScene, color, ref_id, vec3
 
 
 DEFAULT_PROJECT = Path(r"C:\Users\lizi\Documents\Doc\Unity\ADOFAI")
 DEFAULT_SCENE_REL = Path("Assets") / "scenes" / "Levels" / "1-X.unity"
-OLD_TILE_SIZE = 1.5
+OLD_TILE_SIZE = 1.0
 
 EASE_BY_DOTWEEN_INT = {
     0: "Linear",
@@ -71,6 +71,16 @@ def color_to_hex(value: Any, include_alpha: bool = False) -> str:
 
 def world_to_ado_units(value: float) -> float:
     return round_value(value / OLD_TILE_SIZE)
+
+
+def pivot_offset_for_custom_sprite(asset: AssetRecord | None) -> list[float]:
+    if not asset or not asset.pixel_size:
+        return [0, 0]
+    pivot_x, pivot_y = asset.sprite_pivot
+    width, height = asset.pixel_size
+    offset_x = (0.5 - pivot_x) * width / 100.0
+    offset_y = (0.5 - pivot_y) * height / 100.0
+    return [world_to_ado_units(offset_x), world_to_ado_units(offset_y)]
 
 
 def old_parallax_to_modern_multiplier(value: float) -> float:
@@ -158,6 +168,7 @@ def base_settings(
         "trackColorPulse": "None",
         "trackPulseLength": 10,
         "trackStyle": "Standard",
+        "tileShape": "Short",
         "trackAnimation": "None",
         "beatsAhead": 3,
         "trackDisappearAnimation": "None",
@@ -350,7 +361,7 @@ def extract_decorations(
                 "decorationImage": copied_name,
                 "position": [world_to_ado_units(export_world_x), world_to_ado_units(export_world_y)],
                 "relativeTo": relative_to,
-                "pivotOffset": [0, 0],
+                "pivotOffset": pivot_offset_for_custom_sprite(asset),
                 "rotation": normalize_angle(world.rotation_z),
                 "scale": [round_value(scale_x), round_value(scale_y)],
                 "tile": [1, 1],
