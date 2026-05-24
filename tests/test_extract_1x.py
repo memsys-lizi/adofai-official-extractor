@@ -49,9 +49,10 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert len(level["pathData"]) == 167
     assert len(level["decorations"]) > 100
     assert level["settings"]["songFilename"] == "1-X.ogg"
-    assert level["settings"]["bgImage"]
+    assert level["settings"]["bgImage"] == ""
+    assert level["settings"]["backgroundColor"] == "250f33"
     assert (out_dir / level["settings"]["songFilename"]).exists()
-    assert (out_dir / level["settings"]["bgImage"]).exists()
+    assert (out_dir / "bg_layer1_1080p.png").exists()
     image_names = {item.name for item in out_dir.iterdir() if item.suffix.lower() in {".png", ".jpg", ".jpeg"}}
     assert len(image_names) <= 30
     assert {"SetSpeed", "Flash", "MoveCamera", "SetFilter", "MoveDecorations"}.issubset(event_types)
@@ -69,6 +70,7 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert all(str(dec["decorationImage"]) in image_names for dec in level["decorations"])
     assert any(dec["parallax"] != [0, 0] for dec in level["decorations"])
     assert any(dec["relativeTo"] != "Global" or dec["parallax"] != [0, 0] for dec in level["decorations"])
+    assert sum(1 for event in level["actions"] if event["floor"] == 0 and event["eventType"] == "MoveDecorations") == 0
 
     report = report_path.read_text(encoding="utf-8")
     assert "暂未精确还原后处理条目数: 0" in report

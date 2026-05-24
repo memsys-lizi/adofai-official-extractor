@@ -15,6 +15,7 @@ from .unity_scene import UnityObject, UnityScene, color, ref_id, vec3
 
 DEFAULT_PROJECT = Path(r"C:\Users\lizi\Documents\Doc\Unity\ADOFAI")
 DEFAULT_SCENE_REL = Path("Assets") / "scenes" / "Levels" / "1-X.unity"
+OLD_TILE_SIZE = 1.5
 
 EASE_BY_DOTWEEN_INT = {
     0: "Linear",
@@ -68,6 +69,10 @@ def color_to_hex(value: Any, include_alpha: bool = False) -> str:
     return f"{clamp_byte(r):02x}{clamp_byte(g):02x}{clamp_byte(b):02x}"
 
 
+def world_to_ado_units(value: float) -> float:
+    return round_value(value / OLD_TILE_SIZE)
+
+
 def enabled(value: bool) -> str:
     return "Enabled" if value else "Disabled"
 
@@ -96,7 +101,14 @@ def duration_beats(seconds: float, bpm: float, speed: float) -> float:
     return round_value(seconds / crotchet)
 
 
-def base_settings(caption: str, bpm: float, offset_seconds: float, song_filename: str = "", bg_image: str = "") -> dict[str, Any]:
+def base_settings(
+    caption: str,
+    bpm: float,
+    offset_seconds: float,
+    song_filename: str = "",
+    bg_image: str = "",
+    background_color: str = "250f33",
+) -> dict[str, Any]:
     song = caption
     if " " in caption:
         maybe_id, maybe_title = caption.split(" ", 1)
@@ -137,7 +149,7 @@ def base_settings(caption: str, bpm: float, offset_seconds: float, song_filename
         "beatsAhead": 3,
         "trackDisappearAnimation": "None",
         "beatsBehind": 4,
-        "backgroundColor": "0f1026",
+        "backgroundColor": background_color,
         "bgImage": bg_image,
         "bgImageColor": "ffffff",
         "parallax": [100, 100],
@@ -316,7 +328,7 @@ def extract_decorations(
                 "floor": 0,
                 "eventType": "AddDecoration",
                 "decorationImage": copied_name,
-                "position": [round_value(world.x), round_value(world.y)],
+                "position": [world_to_ado_units(world.x), world_to_ado_units(world.y)],
                 "relativeTo": relative_to,
                 "pivotOffset": [0, 0],
                 "rotation": normalize_angle(world.rotation_z),
@@ -341,7 +353,7 @@ def extract_decorations(
         if len(decorations) <= 40 and (parallax != [0, 0] or relative_to != "Global" or abs(world.rotation_z) > 0.001):
             report.add(
                 "Decoration mapping",
-                f"{path}: relativeTo={relative_to}, parallax={parallax}, UnityRot={round_value(world.rotation_z)} -> exportRot={normalize_angle(world.rotation_z)}",
+                f"{path}: relativeTo={relative_to}, parallax={parallax}, UnityPos=({round_value(world.x)},{round_value(world.y)}) -> exportPos=({world_to_ado_units(world.x)},{world_to_ado_units(world.y)}), UnityRot={round_value(world.rotation_z)} -> exportRot={normalize_angle(world.rotation_z)}",
             )
     return decorations, tag_by_go, image_by_go
 
@@ -551,7 +563,7 @@ def convert_scene_animation_scripts(
                 "eventType": "MoveDecorations",
                 "duration": duration_beats(active_seconds, bpm, speed_at_floor(floor_speeds, start_beat)),
                 "tag": tag,
-                "positionOffset": [round_value(velocity[0] * active_seconds), round_value(velocity[1] * active_seconds)],
+                "positionOffset": [world_to_ado_units(velocity[0] * active_seconds), world_to_ado_units(velocity[1] * active_seconds)],
                 "angleOffset": 0,
                 "ease": "Linear",
                 "eventTag": "scrMove approximation",
@@ -563,70 +575,13 @@ def convert_scene_animation_scripts(
         )
 
     pulse_count = 0
-    for pulse in scene.mono_by_script("scrPulseOnBeat"):
-        go_id = scene.component_gameobject_id(pulse)
-        tag = tag_by_go.get(go_id or -1)
-        if not tag:
-            continue
-        renderer = scene.component_for_gameobject(go_id or -1, "SpriteRenderer")
-        if not renderer:
-            continue
-        world = scene.world_transform_for_gameobject(go_id)
-        pulse_width = safe_float(pulse.data.get("pulsewidth"), 1.0)
-        time_seconds = safe_float(pulse.data.get("time"), 0.2)
-        for floor in range(0, min(total_beats, 64), 4):
-            actions.append(
-                {
-                    "floor": floor,
-                    "eventType": "MoveDecorations",
-                    "duration": 0,
-                    "tag": tag,
-                    "scale": [round_value(world.scale_x * 100 * pulse_width), round_value(world.scale_y * 100 * pulse_width)],
-                    "angleOffset": 0,
-                    "ease": "Linear",
-                    "eventTag": "scrPulseOnBeat approximation",
-                }
-            )
-            actions.append(
-                {
-                    "floor": floor,
-                    "eventType": "MoveDecorations",
-                    "duration": duration_beats(time_seconds, bpm, speed_at_floor(floor_speeds, floor)),
-                    "tag": tag,
-                    "scale": [round_value(world.scale_x * 100), round_value(world.scale_y * 100)],
-                    "angleOffset": 0,
-                    "ease": "OutSine",
-                    "eventTag": "scrPulseOnBeat approximation",
-                }
-            )
-        pulse_count += 1
+    pulse_count = len([pulse for pulse in scene.mono_by_script("scrPulseOnBeat") if tag_by_go.get(scene.component_gameobject_id(pulse) or -1)])
     if pulse_count:
-        report.add("Decoration mapping", f"scrPulseOnBeat：已为 {pulse_count} 个星星对象生成前 64 拍的近似脉冲缩放。")
+        report.add("Unsupported effects", f"scrPulseOnBeat: {pulse_count} 个星星脉冲组件会制造大量重复事件，暂不导出，避免第一个砖块堆满 MoveDecorations。")
 
-    opacity_count = 0
-    for opacity in scene.mono_by_script("scrOpacityChangeOnBeat"):
-        go_id = scene.component_gameobject_id(opacity)
-        tag = tag_by_go.get(go_id or -1)
-        values = opacity.data.get("arrOpacity") or []
-        if not tag or not values:
-            continue
-        for floor in range(0, min(total_beats, 64), 4):
-            value = safe_float(values[(floor // 4) % len(values)], 1.0) * 100.0
-            actions.append(
-                {
-                    "floor": floor,
-                    "eventType": "MoveDecorations",
-                    "duration": 0,
-                    "tag": tag,
-                    "opacity": round_value(value),
-                    "angleOffset": 0,
-                    "ease": "Linear",
-                    "eventTag": "scrOpacityChangeOnBeat approximation",
-                }
-            )
-        opacity_count += 1
+    opacity_count = len([opacity for opacity in scene.mono_by_script("scrOpacityChangeOnBeat") if tag_by_go.get(scene.component_gameobject_id(opacity) or -1)])
     if opacity_count:
-        report.add("Decoration mapping", f"scrOpacityChangeOnBeat：已为 {opacity_count} 个星星对象生成前 64 拍的近似透明度变化。")
+        report.add("Unsupported effects", f"scrOpacityChangeOnBeat: {opacity_count} 个星星透明度组件会制造大量重复事件，暂不导出。")
 
     for script_name in ("scrLanternShake", "scrVolumeTrackerScale"):
         count = len(scene.mono_by_script(script_name))
@@ -729,7 +684,7 @@ def export_background(
     used_asset_names: set[str],
     copied_by_source: dict[Path, str],
     report: ConversionReport,
-) -> tuple[str, set[int]]:
+) -> str:
     candidates: list[tuple[int, UnityObject, str]] = []
     for renderer in scene.by_class("SpriteRenderer"):
         go_id = scene.component_gameobject_id(renderer)
@@ -749,10 +704,20 @@ def export_background(
             if copied:
                 copied_by_source[asset.path] = copied
         if copied:
-            report.add("Music and background", f"背景：{asset.project_relative_path} -> {copied}（源对象 {path}）")
-            return copied, {go_id}
-    report.add("Missing assets", "没有找到可用背景图，bgImage 将保持为空。")
-    return "", set()
+            report.add(
+                "Music and background",
+                f"背景层资源：{asset.project_relative_path} -> {copied}（源对象 {path}，保留为装饰层，不写入 settings.bgImage）",
+            )
+            return copied
+    report.add("Missing assets", "没有找到可用背景层资源。")
+    return ""
+
+
+def camera_background_color(scene: UnityScene) -> str:
+    for camera in scene.by_class("Camera"):
+        if scene.path_for_gameobject(scene.component_gameobject_id(camera)) == "Camera/BGStaticCam":
+            return color_to_hex(camera.data.get("m_BackGroundColor"))
+    return "250f33"
 
 
 def speed_at_floor(floor_speeds: list[float], floor: int) -> float:
@@ -787,7 +752,8 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     copied_by_source: dict[Path, str] = {}
 
     song_filename = export_song(scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
-    bg_image, bg_skip = export_background(scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
+    bg_layer_image = export_background(scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
+    background_color = camera_background_color(scene)
     decorations, tag_by_go, copied_assets = extract_decorations(
         scene,
         asset_index,
@@ -795,7 +761,6 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
         used_asset_names,
         copied_by_source,
         report,
-        skip_gameobjects=bg_skip,
     )
     actions: list[dict[str, Any]] = []
     actions.extend(initial_bloom_events(scene, report))
@@ -812,7 +777,8 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
             bpm,
             offset_seconds,
             song_filename,
-            bg_image,
+            "",
+            background_color,
         ),
         "actions": actions,
         "decorations": decorations,
@@ -827,7 +793,7 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     report.set_stat("nonzero_parallax_decorations", sum(1 for d in decorations if d.get("parallax") != [0, 0]))
     report.set_stat("set_speed_events", sum(1 for a in actions if a.get("eventType") == "SetSpeed"))
     report.set_stat("song_filename", song_filename or "<缺失>")
-    report.set_stat("background_image", bg_image or "<缺失>")
+    report.set_stat("background_image", bg_layer_image or "<缺失>")
     report.set_stat("unsupported_effect_messages", len(report.items.get("Unsupported effects", [])))
     report.set_stat("unsupported_post_processing_messages", len(report.items.get("Unsupported post-processing", [])))
 
