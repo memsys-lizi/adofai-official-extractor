@@ -1,0 +1,21 @@
+[project]
+name = "adofai-official-extractor"
+version = "0.1.0"
+description = "Experimental converter for old Unity scene-based ADOFAI official levels."
+requires-python = ">=3.11"
+dependencies = [
+    "ruamel.yaml>=0.19.1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
