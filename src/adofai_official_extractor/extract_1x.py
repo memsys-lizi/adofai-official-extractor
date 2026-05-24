@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from math import cos, pi, radians, sin
 from pathlib import Path
 import re
 import shutil
@@ -9,13 +10,14 @@ from typing import Any
 
 from .adofai_writer import copy_asset, write_adofai
 from .asset_index import AssetIndex, AssetRecord
+from .profiles import PROFILE_1X, PROFILES, LevelProfile
 from .report import ConversionReport
 from .unity_scene import UnityObject, UnityScene, color, ref_id, vec3
 
 
 DEFAULT_PROJECT = Path(r"C:\Users\lizi\Documents\Doc\Unity\ADOFAI")
-DEFAULT_SCENE_REL = Path("Assets") / "scenes" / "Levels" / "1-X.unity"
-OLD_TILE_SIZE = 1.0
+DEFAULT_SCENE_REL = PROFILE_1X.scene_rel
+OLD_TILE_SIZE = PROFILE_1X.tile_size
 
 EASE_BY_DOTWEEN_INT = {
     0: "Linear",
@@ -50,6 +52,14 @@ class ExtractionResult:
     old_path_raw: str
 
 
+@dataclass(frozen=True)
+class DecorationExport:
+    tag: str
+    tags: str
+    scale: tuple[float, float]
+    local_scale: tuple[float, float]
+
+
 def clean_old_path(raw: str) -> str:
     return re.sub(r"\s+", "", raw)
 
@@ -80,6 +90,53 @@ def pivot_offset_for_custom_sprite(asset: AssetRecord | None) -> list[float]:
     width, height = asset.pixel_size
     offset_x = (0.5 - pivot_x) * width / 100.0
     offset_y = (0.5 - pivot_y) * height / 100.0
+    return [world_to_ado_units(offset_x), world_to_ado_units(offset_y)]
+
+
+def sprite_center_local_offset(asset: AssetRecord | None) -> tuple[float, float]:
+    if not asset or not asset.pixel_size:
+        return (0.0, 0.0)
+    pivot_x, pivot_y = asset.sprite_pivot
+    width, height = asset.pixel_size
+    ppu = max(asset.sprite_pixels_per_unit, 0.001)
+    return ((0.5 - pivot_x) * width / ppu, (0.5 - pivot_y) * height / ppu)
+
+
+def transform_point(matrix: list[list[float]], point: tuple[float, float, float]) -> tuple[float, float, float]:
+    x, y, z = point
+    return (
+        matrix[0][0] * x + matrix[0][1] * y + matrix[0][2] * z + matrix[0][3],
+        matrix[1][0] * x + matrix[1][1] * y + matrix[1][2] * z + matrix[1][3],
+        matrix[2][0] * x + matrix[2][1] * y + matrix[2][2] * z + matrix[2][3],
+    )
+
+
+def inverse_rotate_2d(x: float, y: float, degrees_value: float) -> tuple[float, float]:
+    angle = radians(-degrees_value)
+    return (x * cos(angle) - y * sin(angle), x * sin(angle) + y * cos(angle))
+
+
+def assembly_pivot_offset(
+    scene: UnityScene,
+    go_id: int,
+    anchor_go_id: int,
+    asset: AssetRecord | None,
+    rotation_z: float,
+    scale_x: float,
+    scale_y: float,
+) -> list[float]:
+    transform = scene.transform_for_gameobject(go_id)
+    anchor = scene.world_transform_for_gameobject(anchor_go_id)
+    if transform is None:
+        return [0, 0]
+    local_x, local_y = sprite_center_local_offset(asset)
+    center_x, center_y, _ = transform_point(scene.world_matrix(transform.file_id), (local_x, local_y, 0.0))
+    delta_x, delta_y = center_x - anchor.x, center_y - anchor.y
+    offset_x, offset_y = inverse_rotate_2d(delta_x, delta_y, rotation_z)
+    if abs(scale_x) > 0.00001:
+        offset_x /= scale_x
+    if abs(scale_y) > 0.00001:
+        offset_y /= scale_y
     return [world_to_ado_units(offset_x), world_to_ado_units(offset_y)]
 
 
@@ -131,6 +188,8 @@ def base_settings(
     song_filename: str = "",
     bg_image: str = "",
     background_color: str = "250f33",
+    track_color: str = "ffffff",
+    profile: LevelProfile = PROFILE_1X,
 ) -> dict[str, Any]:
     song = caption
     if " " in caption:
@@ -150,8 +209,8 @@ def base_settings(
         "previewSongStart": 0,
         "previewSongDuration": 10,
         "seizureWarning": "Disabled",
-        "levelDesc": "Extracted from the old Unity scene-based official 1-X level.",
-        "levelTags": "official,extracted,experimental",
+        "levelDesc": profile.level_desc,
+        "levelTags": profile.level_tags,
         "difficulty": 1,
         "songFilename": song_filename,
         "bpm": bpm,
@@ -162,13 +221,15 @@ def base_settings(
         "hitsoundVolume": 100,
         "countdownTicks": 4,
         "trackColorType": "Single",
-        "trackColor": "debb7b",
+        "trackColor": track_color,
         "secondaryTrackColor": "ffffff",
         "trackColorAnimDuration": 2,
         "trackColorPulse": "None",
         "trackPulseLength": 10,
         "trackStyle": "Standard",
-        "tileShape": "Short",
+        "trackTexture": "",
+        "trackTextureScale": 1,
+        "tileShape": profile.tile_shape,
         "trackAnimation": "None",
         "beatsAhead": 3,
         "trackDisappearAnimation": "None",
@@ -273,6 +334,20 @@ def first_script_in_ancestors(scene: UnityScene, go_id: int, script_name: str) -
     return None
 
 
+def first_script_and_gameobject_in_ancestors(
+    scene: UnityScene, go_id: int, script_name: str
+) -> tuple[UnityObject, int] | None:
+    for ancestor_id in scene.ancestor_gameobject_ids(go_id):
+        script = scene.script_for_gameobject(ancestor_id, script_name)
+        if script and script.data.get("m_Enabled", 1):
+            return script, ancestor_id
+    return None
+
+
+def lantern_phase_tag(root_go_id: int) -> str:
+    return f"lantern_phase_{root_go_id % 4}"
+
+
 def inherited_parallax(scene: UnityScene, go_id: int, report: ConversionReport) -> tuple[list[float], tuple[float, float], str]:
     parallax = first_script_in_ancestors(scene, go_id, "scrParallax")
     if not parallax:
@@ -310,10 +385,12 @@ def extract_decorations(
     copied_by_source: dict[Path, str],
     report: ConversionReport,
     skip_gameobjects: set[int] | None = None,
-) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, str]]:
+) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, str], dict[int, DecorationExport]]:
     decorations: list[dict[str, Any]] = []
     tag_by_go: dict[int, str] = {}
     image_by_go: dict[int, str] = {}
+    deco_by_go: dict[int, DecorationExport] = {}
+    lantern_assembly_tags: dict[int, str] = {}
     used_tags: set[str] = set()
     level_dir = output_dir
     skip_gameobjects = skip_gameobjects or set()
@@ -340,20 +417,41 @@ def extract_decorations(
             report.add("Missing assets", f"{path} 引用了未知的 sprite guid：{guid}")
             continue
 
+        lantern = first_script_and_gameobject_in_ancestors(scene, go_id, "scrLanternShake")
+        anchor_go_id = lantern[1] if lantern else go_id
+        anchor_path = scene.path_for_gameobject(anchor_go_id)
+        anchor_world = scene.world_transform_for_gameobject(anchor_go_id)
+        position_world = anchor_world if lantern else world
+
         tag = make_tag(path, go_id, used_tags)
+        extra_tags: list[str] = []
+        if lantern:
+            assembly_tag = lantern_assembly_tags.get(anchor_go_id)
+            if assembly_tag is None:
+                assembly_tag = make_tag(f"{anchor_path}/lantern_assembly", anchor_go_id, used_tags)
+                lantern_assembly_tags[anchor_go_id] = assembly_tag
+            extra_tags.extend([assembly_tag, lantern_phase_tag(anchor_go_id)])
+        tag_value = " ".join([tag, *extra_tags])
         tag_by_go[go_id] = tag
         image_by_go[go_id] = copied_name
         r, g, b, a = color(renderer.data.get("m_Color"))
         sorting_order = int(renderer.data.get("m_SortingOrder", 0) or 0)
-        parallax, old_parallax, relative_to = inherited_parallax(scene, go_id, report)
-        lock_pos, lock_rot, lock_scale = inherited_camera_lock(scene, go_id)
+        parallax, old_parallax, relative_to = inherited_parallax(scene, anchor_go_id, report)
+        lock_pos, lock_rot, lock_scale = inherited_camera_lock(scene, anchor_go_id)
         if lock_pos:
             relative_to = "Camera"
-        export_world_x = old_world_to_modern_parallax_position(world.x, old_parallax[0])
-        export_world_y = old_world_to_modern_parallax_position(world.y, old_parallax[1])
+        export_world_x = old_world_to_modern_parallax_position(position_world.x, old_parallax[0])
+        export_world_y = old_world_to_modern_parallax_position(position_world.y, old_parallax[1])
         scale_multiplier = 100.0 / max(asset.sprite_pixels_per_unit if asset else 100.0, 0.001)
         scale_x = world.scale_x * 100.0 * scale_multiplier * (-1.0 if renderer.data.get("m_FlipX") else 1.0)
         scale_y = world.scale_y * 100.0 * scale_multiplier * (-1.0 if renderer.data.get("m_FlipY") else 1.0)
+        transform = scene.transform_for_gameobject(go_id)
+        local_scale = vec3(transform.data.get("m_LocalScale"), (1.0, 1.0, 1.0)) if transform else (1.0, 1.0, 1.0)
+        pivot_offset = (
+            assembly_pivot_offset(scene, go_id, anchor_go_id, asset, world.rotation_z, scale_x / 100.0, scale_y / 100.0)
+            if lantern
+            else pivot_offset_for_custom_sprite(asset)
+        )
         decorations.append(
             {
                 "floor": 0,
@@ -361,7 +459,7 @@ def extract_decorations(
                 "decorationImage": copied_name,
                 "position": [world_to_ado_units(export_world_x), world_to_ado_units(export_world_y)],
                 "relativeTo": relative_to,
-                "pivotOffset": pivot_offset_for_custom_sprite(asset),
+                "pivotOffset": pivot_offset,
                 "rotation": normalize_angle(world.rotation_z),
                 "scale": [round_value(scale_x), round_value(scale_y)],
                 "tile": [1, 1],
@@ -369,7 +467,7 @@ def extract_decorations(
                 "opacity": round_value(a * 100),
                 "depth": -sorting_order,
                 "parallax": parallax,
-                "tag": tag,
+                "tag": tag_value,
                 "imageSmoothing": "Enabled",
                 "lockRotation": enabled(lock_rot),
                 "lockScale": enabled(lock_scale),
@@ -381,12 +479,20 @@ def extract_decorations(
                 "components": "",
             }
         )
+        deco_by_go[go_id] = DecorationExport(
+            tag=tag,
+            tags=tag_value,
+            scale=(round_value(scale_x), round_value(scale_y)),
+            local_scale=(local_scale[0], local_scale[1]),
+        )
         if len(decorations) <= 40 and (parallax != [0, 0] or relative_to != "Global" or abs(world.rotation_z) > 0.001):
             report.add(
                 "Decoration mapping",
                 f"{path}: relativeTo={relative_to}, oldParallax=({round_value(old_parallax[0])},{round_value(old_parallax[1])}), exportParallax={parallax}, UnityPos=({round_value(world.x)},{round_value(world.y)}) -> exportPos=({world_to_ado_units(export_world_x)},{world_to_ado_units(export_world_y)}), UnityRot={round_value(world.rotation_z)} -> exportRot={normalize_angle(world.rotation_z)}",
             )
-    return decorations, tag_by_go, image_by_go
+    if lantern_assembly_tags:
+        report.add("Decoration mapping", f"已把 {len(lantern_assembly_tags)} 个灯笼组按父级挂点导出，灯体和光效共享同一个旋转轴。")
+    return decorations, tag_by_go, image_by_go, deco_by_go
 
 
 def effect_floor(scene: UnityScene, effect: UnityObject, floor_lookup: dict[int, int]) -> int | None:
@@ -571,6 +677,7 @@ def convert_floor_effects(
 def convert_scene_animation_scripts(
     scene: UnityScene,
     tag_by_go: dict[int, str],
+    deco_by_go: dict[int, DecorationExport],
     bpm: float,
     floor_speeds: list[float],
     report: ConversionReport,
@@ -605,20 +712,177 @@ def convert_scene_animation_scripts(
             f"{scene.path_for_gameobject(go_id)}: scrMove velocity=({velocity[0]:g},{velocity[1]:g}) delay={delay_seconds:g}s，已近似为长 MoveDecorations。",
         )
 
-    pulse_count = 0
-    pulse_count = len([pulse for pulse in scene.mono_by_script("scrPulseOnBeat") if tag_by_go.get(scene.component_gameobject_id(pulse) or -1)])
-    if pulse_count:
-        report.add("Unsupported effects", f"scrPulseOnBeat: {pulse_count} 个星星脉冲组件会制造大量重复事件，暂不导出，避免第一个砖块堆满 MoveDecorations。")
+    actions.extend(convert_lantern_shakes(scene, bpm, floor_speeds, report))
+    actions.extend(convert_pulse_on_beat(scene, deco_by_go, bpm, floor_speeds, report))
+    actions.extend(convert_opacity_on_beat(scene, deco_by_go, floor_speeds, report))
 
-    opacity_count = len([opacity for opacity in scene.mono_by_script("scrOpacityChangeOnBeat") if tag_by_go.get(scene.component_gameobject_id(opacity) or -1)])
-    if opacity_count:
-        report.add("Unsupported effects", f"scrOpacityChangeOnBeat: {opacity_count} 个星星透明度组件会制造大量重复事件，暂不导出。")
-
-    for script_name in ("scrLanternShake", "scrVolumeTrackerScale"):
+    for script_name in ("scrVolumeTrackerScale",):
         count = len(scene.mono_by_script(script_name))
         if count:
             report.add("Unsupported effects", f"{script_name}: {count} 个组件依赖运行时/音频采样，第一版先记录，未完全复刻。")
 
+    return actions
+
+
+def tag_chunks(tags: list[str], limit: int = 850) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for tag in sorted(tags):
+        projected = current_len + len(tag) + (1 if current else 0)
+        if current and projected > limit:
+            chunks.append(" ".join(current))
+            current = [tag]
+            current_len = len(tag)
+        else:
+            current.append(tag)
+            current_len = projected
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def convert_lantern_shakes(
+    scene: UnityScene,
+    bpm: float,
+    floor_speeds: list[float],
+    report: ConversionReport,
+) -> list[dict[str, Any]]:
+    lantern_roots = [
+        scene.component_gameobject_id(script)
+        for script in scene.mono_by_script("scrLanternShake")
+        if script.data.get("m_Enabled", 1)
+    ]
+    lantern_roots = [go_id for go_id in lantern_roots if go_id is not None]
+    if not lantern_roots:
+        return []
+
+    actions: list[dict[str, Any]] = []
+    phases = sorted({root_id % 4 for root_id in lantern_roots})
+    for phase_index in phases:
+        phase = phase_index * pi / 2.0
+        tag = f"lantern_phase_{phase_index}"
+        for floor in range(len(floor_speeds)):
+            for half in (0, 1):
+                beat = floor + half * 0.5
+                seconds = beat * 60.0 / max(bpm, 0.001)
+                angle = 10.0 * sin(seconds * 5.0 + phase)
+                actions.append(
+                    {
+                        "floor": floor,
+                        "eventType": "MoveDecorations",
+                        "duration": 0.5,
+                        "tag": tag,
+                        "rotationOffset": round_value(angle),
+                        "angleOffset": 180 * half,
+                        "ease": "InOutSine",
+                        "eventTag": "scrLanternShake approximation",
+                    }
+                )
+    report.add(
+        "Decoration mapping",
+        f"scrLanternShake: {len(lantern_roots)} 个灯笼已按 4 组相位近似为正弦旋转 MoveDecorations。",
+    )
+    return actions
+
+
+def convert_pulse_on_beat(
+    scene: UnityScene,
+    deco_by_go: dict[int, DecorationExport],
+    bpm: float,
+    floor_speeds: list[float],
+    report: ConversionReport,
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[tuple[float, float], tuple[float, float], float], list[str]] = {}
+    for pulse in scene.mono_by_script("scrPulseOnBeat"):
+        go_id = scene.component_gameobject_id(pulse)
+        export = deco_by_go.get(go_id or -1)
+        if not export:
+            continue
+        pulse_width = safe_float(pulse.data.get("pulsewidth"), 1.0)
+        local_x = export.local_scale[0] or 1.0
+        local_y = export.local_scale[1] or 1.0
+        target_scale = (
+            round_value(export.scale[0] * pulse_width / local_x),
+            round_value(export.scale[1] * pulse_width / local_y),
+        )
+        restore_scale = (round_value(export.scale[0]), round_value(export.scale[1]))
+        time_seconds = safe_float(pulse.data.get("time"), 0.0)
+        groups.setdefault((target_scale, restore_scale, time_seconds), []).append(export.tag)
+
+    if not groups:
+        return []
+
+    actions: list[dict[str, Any]] = []
+    for floor in range(len(floor_speeds)):
+        restore_duration = duration_beats(0.8, bpm, speed_at_floor(floor_speeds, floor))
+        for (target_scale, restore_scale, time_seconds), tags in groups.items():
+            duration = duration_beats(time_seconds, bpm, speed_at_floor(floor_speeds, floor)) or restore_duration
+            for tag in tag_chunks(tags):
+                actions.append(
+                    {
+                        "floor": floor,
+                        "eventType": "MoveDecorations",
+                        "duration": 0,
+                        "tag": tag,
+                        "scale": list(target_scale),
+                        "angleOffset": 0,
+                        "ease": "Linear",
+                        "eventTag": "scrPulseOnBeat pulse",
+                    }
+                )
+                actions.append(
+                    {
+                        "floor": floor,
+                        "eventType": "MoveDecorations",
+                        "duration": duration,
+                        "tag": tag,
+                        "scale": list(restore_scale),
+                        "angleOffset": 0,
+                        "ease": "OutSine",
+                        "eventTag": "scrPulseOnBeat restore",
+                    }
+                )
+    report.add("Decoration mapping", f"scrPulseOnBeat: {sum(len(v) for v in groups.values())} 个星星已转换为按拍缩放。")
+    return actions
+
+
+def convert_opacity_on_beat(
+    scene: UnityScene,
+    deco_by_go: dict[int, DecorationExport],
+    floor_speeds: list[float],
+    report: ConversionReport,
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[float, ...], list[str]] = {}
+    for opacity in scene.mono_by_script("scrOpacityChangeOnBeat"):
+        go_id = scene.component_gameobject_id(opacity)
+        export = deco_by_go.get(go_id or -1)
+        values = opacity.data.get("arrOpacity")
+        if not export or not isinstance(values, list) or not values:
+            continue
+        groups.setdefault(tuple(round_value(safe_float(value) * 100) for value in values), []).append(export.tag)
+
+    if not groups:
+        return []
+
+    actions: list[dict[str, Any]] = []
+    for floor in range(len(floor_speeds)):
+        for values, tags in groups.items():
+            opacity = values[(floor + 1) % len(values)]
+            for tag in tag_chunks(tags):
+                actions.append(
+                    {
+                        "floor": floor,
+                        "eventType": "MoveDecorations",
+                        "duration": 0,
+                        "tag": tag,
+                        "opacity": opacity,
+                        "angleOffset": 0,
+                        "ease": "Linear",
+                        "eventTag": "scrOpacityChangeOnBeat",
+                    }
+                )
+    report.add("Decoration mapping", f"scrOpacityChangeOnBeat: {sum(len(v) for v in groups.values())} 个星星已转换为按拍透明度切换。")
     return actions
 
 
@@ -758,9 +1022,11 @@ def speed_at_floor(floor_speeds: list[float], floor: int) -> float:
     return floor_speeds[floor] or 1.0
 
 
-def extract(project_root: str | Path, scene_path: str | Path | None, output_dir: str | Path) -> ExtractionResult:
+def extract_with_profile(
+    profile: LevelProfile, project_root: str | Path, scene_path: str | Path | None, output_dir: str | Path
+) -> ExtractionResult:
     project_root = Path(project_root)
-    scene_path = Path(scene_path) if scene_path else project_root / DEFAULT_SCENE_REL
+    scene_path = Path(scene_path) if scene_path else project_root / profile.scene_rel
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_assets = output_dir / "assets"
@@ -771,6 +1037,7 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     asset_index = AssetIndex.build(project_root)
     scene = UnityScene.load(scene_path, asset_index)
     level_maker = find_one(scene, "scrLevelMaker")
+    level_maker2 = find_one(scene, "scrLevelMaker2")
     conductor = find_one(scene, "scrConductor")
 
     old_path_raw = clean_old_path(str(level_maker.data.get("leveldata") or ""))
@@ -778,6 +1045,7 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     floor_lookup = build_floor_lookup(scene, level_maker)
     bpm = safe_float(conductor.data.get("bpm"), 150.0)
     offset_seconds = safe_float(conductor.data.get("addoffset"), 0.0)
+    track_color = color_to_hex(level_maker2.data.get("tilecolor"))
     floor_speeds = floor_speeds_from_scene(scene, level_maker)
     used_asset_names: set[str] = set()
     copied_by_source: dict[Path, str] = {}
@@ -785,7 +1053,7 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     song_filename = export_song(scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
     bg_layer_image = export_background(scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
     background_color = camera_background_color(scene)
-    decorations, tag_by_go, copied_assets = extract_decorations(
+    decorations, tag_by_go, copied_assets, deco_by_go = extract_decorations(
         scene,
         asset_index,
         output_dir,
@@ -797,19 +1065,21 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     actions.extend(initial_bloom_events(scene, report))
     actions.extend(scene_speed_events(floor_speeds, bpm, report))
     actions.extend(convert_floor_effects(scene, floor_lookup, tag_by_go, bpm, floor_speeds, report))
-    actions.extend(convert_scene_animation_scripts(scene, tag_by_go, bpm, floor_speeds, report))
+    actions.extend(convert_scene_animation_scripts(scene, tag_by_go, deco_by_go, bpm, floor_speeds, report))
     report_post_processing(scene, report)
 
     actions.sort(key=lambda item: (int(item.get("floor", 0)), str(item.get("eventType", ""))))
     level = {
         "pathData": path_data,
         "settings": base_settings(
-            str(level_maker.data.get("caption") or "1-X A Dance of Fire and Ice"),
+            str(level_maker.data.get("caption") or profile.default_caption),
             bpm,
             offset_seconds,
             song_filename,
             "",
             background_color,
+            track_color,
+            profile,
         ),
         "actions": actions,
         "decorations": decorations,
@@ -833,22 +1103,29 @@ def extract(project_root: str | Path, scene_path: str | Path | None, output_dir:
     return ExtractionResult(level, report, copied_assets, len(path_data), old_path_raw)
 
 
+def extract(project_root: str | Path, scene_path: str | Path | None, output_dir: str | Path) -> ExtractionResult:
+    return extract_with_profile(PROFILE_1X, project_root, scene_path, output_dir)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Extract old official ADOFAI 1-X Unity scene to vanilla .adofai.")
+    parser = argparse.ArgumentParser(description="Extract old official Unity scene-based ADOFAI levels to vanilla .adofai.")
+    parser.add_argument("--level", default=PROFILE_1X.level_id, choices=sorted(PROFILES), help="Official level profile to export.")
     parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT, help="Unity project root.")
-    parser.add_argument("--scene", type=Path, default=None, help="Scene path. Defaults to Assets/scenes/Levels/1-X.unity.")
-    parser.add_argument("--out", type=Path, default=Path("exports") / "1-X", help="Output level folder.")
+    parser.add_argument("--scene", type=Path, default=None, help="Scene path. Defaults to the selected profile scene.")
+    parser.add_argument("--out", type=Path, default=None, help="Output level folder.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    result = extract(args.project, args.scene, args.out)
-    print(f"Wrote {args.out / 'main.adofai'}")
+    profile = PROFILES[args.level]
+    output_dir = args.out or Path("exports") / profile.level_id
+    result = extract_with_profile(profile, args.project, args.scene, output_dir)
+    print(f"Wrote {output_dir / 'main.adofai'}")
     print(f"Floors/path chars: {result.floor_count}")
     print(f"Decorations: {len(result.level['decorations'])}")
     print(f"Actions: {len(result.level['actions'])}")
-    print(f"Report: {args.out / 'conversion_report.md'}")
+    print(f"Report: {output_dir / 'conversion_report.md'}")
 
 
 if __name__ == "__main__":

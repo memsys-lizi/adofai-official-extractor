@@ -15,6 +15,7 @@ from adofai_official_extractor.extract_1x import (
     old_world_to_modern_parallax_position,
     visible_path_from_old_data,
 )
+from adofai_official_extractor.profiles import PROFILE_1X, PROFILES
 from adofai_official_extractor.unity_scene import UnityScene
 
 
@@ -32,6 +33,12 @@ def test_old_level_path_counts() -> None:
     speeds = floor_speeds_from_scene(scene, level_maker)
     assert speeds.count(0.25) == 7
     assert speeds[161:] == [0.25] * 7
+
+
+def test_1x_profile_drives_default_scene() -> None:
+    assert PROFILES["1-X"] is PROFILE_1X
+    assert DEFAULT_SCENE_REL == PROFILE_1X.scene_rel
+    assert PROFILE_1X.tile_shape == "Short"
 
 
 def test_world_transform_projects_3d_chain_hierarchy() -> None:
@@ -67,6 +74,9 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert len(level["decorations"]) > 100
     assert level["settings"]["songFilename"] == "1-X.ogg"
     assert level["settings"]["tileShape"] == "Short"
+    assert level["settings"]["trackColor"] == "ffffff"
+    assert level["settings"]["trackTexture"] == ""
+    assert level["settings"]["trackTextureScale"] == 1
     assert level["settings"]["bgImage"] == ""
     assert level["settings"]["backgroundColor"] == "250f33"
     assert (out_dir / level["settings"]["songFilename"]).exists()
@@ -88,11 +98,15 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert all(str(dec["decorationImage"]) in image_names for dec in level["decorations"])
     assert any(dec["parallax"] != [0, 0] for dec in level["decorations"])
     assert any(dec["relativeTo"] != "Global" or dec["parallax"] != [0, 0] for dec in level["decorations"])
-    assert sum(1 for event in level["actions"] if event["floor"] == 0 and event["eventType"] == "MoveDecorations") == 0
+    assert any(event.get("eventTag") == "scrLanternShake approximation" for event in level["actions"])
+    assert any(event.get("eventTag") == "scrPulseOnBeat pulse" for event in level["actions"])
+    assert any(event.get("eventTag") == "scrOpacityChangeOnBeat" for event in level["actions"])
     statue = next(dec for dec in level["decorations"] if dec["decorationImage"] == "world1_statue_enhance_lowres.png")
     assert abs(statue["position"][0] - 155.51) < 0.01
     assert abs(statue["pivotOffset"][0] - 0.00513) < 0.001
     assert abs(statue["pivotOffset"][1] + 0.02065) < 0.001
+    lantern = next(dec for dec in level["decorations"] if "lantern_phase_" in dec["tag"])
+    assert "lantern_assembly" in lantern["tag"]
 
     report = report_path.read_text(encoding="utf-8")
     assert "暂未精确还原后处理条目数: 0" in report
