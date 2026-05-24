@@ -4,11 +4,10 @@ import json
 from pathlib import Path
 
 from adofai_official_extractor.asset_index import AssetIndex
-from adofai_official_extractor.extract_1x import (
+from adofai_official_extractor.converter import (
     DEFAULT_PROJECT,
     DEFAULT_SCENE_REL,
     clean_old_path,
-    extract,
     find_one,
     floor_speeds_from_scene,
     old_parallax_to_modern_multiplier,
@@ -16,7 +15,8 @@ from adofai_official_extractor.extract_1x import (
     resolve_profiles,
     visible_path_from_old_data,
 )
-from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_GROUPS, PROFILES
+from adofai_official_extractor.extract_1x import extract
+from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_2X, PROFILE_GROUPS, PROFILES
 from adofai_official_extractor.unity_scene import UnityScene
 
 
@@ -38,10 +38,29 @@ def test_old_level_path_counts() -> None:
 
 def test_1x_profile_drives_default_scene() -> None:
     assert PROFILES["1-X"] is PROFILE_1X
+    assert PROFILES["2-X"] is PROFILE_2X
     assert DEFAULT_SCENE_REL == PROFILE_1X.scene_rel
     assert PROFILE_1X.tile_shape == "Short"
     assert PROFILE_GROUPS["tutorials-1"] == ("1-1", "1-2", "1-3", "1-4", "1-5", "1-6")
     assert [profile.level_id for profile in resolve_profiles("tutorials-1")] == list(PROFILE_GROUPS["tutorials-1"])
+
+
+def test_2x_old_speed_and_icon_modifiers_do_not_create_path_floors() -> None:
+    asset_index = AssetIndex.build(DEFAULT_PROJECT)
+    scene = UnityScene.load(DEFAULT_PROJECT / PROFILE_2X.scene_rel, asset_index)
+    level_maker = find_one(scene, "scrLevelMaker")
+
+    old_path = clean_old_path(level_maker.data["leveldata"])
+    path_data = visible_path_from_old_data(old_path)
+
+    assert len(old_path) == 158
+    assert old_path.count("S") == 4
+    assert old_path.count("X") == 4
+    assert old_path.count(">") == 2
+    assert old_path.count("<") == 1
+    assert old_path.count("O") == 2
+    assert len(path_data) == 145
+    assert len(level_maker.data["listFloors"]) == 146
 
 
 def test_world_transform_projects_3d_chain_hierarchy() -> None:

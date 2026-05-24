@@ -34,9 +34,18 @@ TUTORIAL_1_PROFILES = tuple(
     for index in range(1, 7)
 )
 
+PROFILE_2X = LevelProfile(
+    level_id="2-X",
+    scene_rel=Path("Assets") / "scenes" / "Levels" / "2-X.unity",
+    default_caption="2-X Offbeats",
+    level_desc="Extracted from the old Unity scene-based official 2-X level.",
+    level_tags="official,extracted,experimental,2-X",
+)
+
 PROFILES = {
     **{profile.level_id: profile for profile in TUTORIAL_1_PROFILES},
     PROFILE_1X.level_id: PROFILE_1X,
+    PROFILE_2X.level_id: PROFILE_2X,
 }
 
 PROFILE_GROUPS = {

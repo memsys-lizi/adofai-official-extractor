@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from .extract_1x import main
+from .converter import main
+from .extract_2x import HOOKS as HOOKS_2X
 
 
 if __name__ == "__main__":
-    main()
+    main(hooks_by_level={"2-X": HOOKS_2X})
