@@ -16,6 +16,7 @@ from adofai_official_extractor.converter import (
     visible_path_from_old_data,
 )
 from adofai_official_extractor.extract_1x import extract
+from adofai_official_extractor.extract_2x import extract as extract_2x
 from adofai_official_extractor.profiles import PROFILE_1X, PROFILE_2X, PROFILE_GROUPS, PROFILES
 from adofai_official_extractor.unity_scene import UnityScene
 
@@ -135,6 +136,77 @@ def test_extract_1x_outputs_vanilla_level_folder(tmp_path: Path) -> None:
     assert "禁用状态的相机后处理组件" in report
     assert "速度映射" in report
     assert "音乐和背景" in report
+
+
+def test_extract_2x_uses_hand_rules_not_script_sampling(tmp_path: Path) -> None:
+    out_dir = tmp_path / "2-X"
+    result = extract_2x(DEFAULT_PROJECT, None, out_dir)
+    level_path = out_dir / "main.adofai"
+
+    assert level_path.exists()
+    level = json.loads(level_path.read_text(encoding="utf-8"))
+    event_types = {event["eventType"] for event in level["actions"]}
+
+    assert level["pathData"] == result.level["pathData"]
+    assert len(level["pathData"]) == 145
+    assert len(level["decorations"]) == 147
+    assert len(level["actions"]) < 40
+    assert level["settings"]["songFilename"] == "2-X.ogg"
+    assert level["settings"]["trackTexture"] == "tiles_world2.png"
+    assert (out_dir / "2-X.ogg").exists()
+    assert (out_dir / "tiles_world2.png").exists()
+    assert {"SetSpeed", "Flash", "CustomBackground", "PlaySound", "MoveDecorations", "MoveCamera"}.issubset(event_types)
+    assert "SetFilter" not in event_types
+
+    set_speed_events = [event for event in level["actions"] if event["eventType"] == "SetSpeed"]
+    assert set_speed_events == [
+        {
+            "floor": 65,
+            "eventType": "SetSpeed",
+            "speedType": "Multiplier",
+            "beatsPerMinute": 160.0,
+            "bpmMultiplier": 0.25,
+        },
+        {
+            "floor": 69,
+            "eventType": "SetSpeed",
+            "speedType": "Multiplier",
+            "beatsPerMinute": 160.0,
+            "bpmMultiplier": 2.0,
+        },
+        {
+            "floor": 73,
+            "eventType": "SetSpeed",
+            "speedType": "Multiplier",
+            "beatsPerMinute": 160.0,
+            "bpmMultiplier": 2.0,
+        },
+    ]
+    move_camera_events = [event for event in level["actions"] if event["eventType"] == "MoveCamera"]
+    assert move_camera_events == [
+        {
+            "floor": 87,
+            "eventType": "MoveCamera",
+            "duration": 5.33333,
+            "relativeTo": "Player",
+            "position": [0, 0],
+            "rotation": 180.0,
+            "zoom": 100,
+            "angleOffset": 0,
+            "ease": "Linear",
+            "eventTag": "2-X scrFloor.rotatecamera",
+        }
+    ]
+    assert not any("2-X scrGfxFloat" in str(event.get("eventTag", "")) for event in level["actions"])
+    assert not any("2-X DOTweenAnimation" in str(event.get("eventTag", "")) for event in level["actions"])
+    assert max(decoration["depth"] for decoration in level["decorations"]) >= 300
+    assert min(decoration["depth"] for decoration in level["decorations"]) >= 50
+    assert any(decoration["lockRotation"] == "Enabled" for decoration in level["decorations"])
+
+    report = (out_dir / "conversion_report.md").read_text(encoding="utf-8")
+    assert "跳过脚本驱动装饰动画" in report
+    assert "2-X 轨道贴图" in report
+    assert "scrFloor.rotatecamera" in report
 
 
 def test_old_parallax_position_is_inverted_for_modern_decorations() -> None:

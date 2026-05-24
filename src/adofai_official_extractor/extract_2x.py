@@ -1,201 +1,67 @@
 from __future__ import annotations
 
-from math import pi, sin
 from pathlib import Path
 from typing import Any
 
+from .adofai_writer import copy_asset
 from .converter import (
     DEFAULT_PROJECT,
-    EASE_BY_DOTWEEN_INT,
     DecorationExport,
     ExtractionResult,
     LevelConversionHooks,
-    beat_to_floor_angle,
     color_to_hex,
+    duration_beats,
     effect_floor,
     extract_with_profile,
-    floor_start_seconds,
     hitsound_name,
     main_for_profile,
-    normalize_angle,
     round_value,
     safe_float,
-    seconds_per_floor,
     speed_at_floor,
-    world_to_ado_units,
 )
 from .profiles import PROFILE_2X
 from .report import ConversionReport
-from .unity_scene import UnityObject, UnityScene, vec3
-
-
-def enabled_scripts_by_gameobject(scene: UnityScene, script_name: str) -> dict[int, UnityObject]:
-    selected: dict[int, UnityObject] = {}
-    for go in scene.by_class("GameObject"):
-        for component_id in scene.component_ids_for_gameobject(go.file_id):
-            component = scene.objects.get(component_id)
-            if (
-                component
-                and component.class_name == "MonoBehaviour"
-                and component.script_name == script_name
-                and component.data.get("m_Enabled", 1)
-            ):
-                selected[go.file_id] = component
-    return selected
-
-
-def convert_gfx_float(
-    scene: UnityScene,
-    tag_by_go: dict[int, str],
-    bpm: float,
-    floor_speeds: list[float],
-    report: ConversionReport,
-) -> list[dict[str, Any]]:
-    selected = enabled_scripts_by_gameobject(scene, "scrGfxFloat")
-    if not selected:
-        return []
-
-    actions: list[dict[str, Any]] = []
-    starts = floor_start_seconds(floor_speeds, bpm)
-    converted = 0
-    skipped_local = 0
-    for go_id, script in selected.items():
-        tag = tag_by_go.get(go_id)
-        if not tag:
-            continue
-        amplitude = safe_float(script.data.get("amplitude"), 0.0)
-        period = safe_float(script.data.get("period"), 1.0) or 1.0
-        if script.data.get("useLocalPos"):
-            skipped_local += 1
-            continue
-        phase = (go_id % 97) / 97.0 * pi
-        for floor, start_seconds in enumerate(starts):
-            target_seconds = start_seconds + seconds_per_floor(bpm, speed_at_floor(floor_speeds, floor))
-            offset_y = amplitude * sin(target_seconds / period + phase)
-            actions.append(
-                {
-                    "floor": floor,
-                    "eventType": "MoveDecorations",
-                    "duration": 1,
-                    "tag": tag,
-                    "positionOffset": [0, world_to_ado_units(offset_y)],
-                    "angleOffset": 0,
-                    "ease": "InOutSine",
-                    "eventTag": "2-X scrGfxFloat approximation",
-                }
-            )
-        converted += 1
-
-    if converted:
-        report.add("Decoration mapping", f"2-X scrGfxFloat: {converted} 个启用对象已按每拍采样正弦上下漂浮近似。")
-    if skipped_local:
-        report.add("Unsupported effects", f"2-X scrGfxFloat: {skipped_local} 个 useLocalPos 对象暂未转换。")
-    return actions
-
-
-def dotween_seconds_to_beat(seconds: float, bpm: float) -> float:
-    return seconds * bpm / 60.0
-
-
-def scale_component(value: float, start_local: float, export_scale: float, is_relative: bool) -> float:
-    target_local = start_local + value if is_relative else value
-    if abs(start_local) < 0.00001:
-        return round_value(export_scale)
-    return round_value(export_scale * target_local / start_local)
-
-
-def convert_dotween_animations(
-    scene: UnityScene,
-    deco_by_go: dict[int, DecorationExport],
-    bpm: float,
-    floor_speeds: list[float],
-    report: ConversionReport,
-) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = []
-    converted = 0
-    unsupported: dict[int, int] = {}
-    total_beats = len(floor_speeds)
-
-    for tween in scene.mono_by_script("DOTweenAnimation"):
-        if not tween.data.get("m_Enabled", 1) or not tween.data.get("autoPlay", 1):
-            continue
-        animation_type = int(tween.data.get("animationType", -1) or -1)
-        if int(tween.data.get("loops", 0) or 0) != -1 or int(tween.data.get("loopType", 0) or 0) != 1:
-            unsupported[animation_type] = unsupported.get(animation_type, 0) + 1
-            continue
-        go_id = scene.component_gameobject_id(tween)
-        export = deco_by_go.get(go_id or -1)
-        if not export:
-            continue
-
-        duration_seconds = safe_float(tween.data.get("duration"), 0.0)
-        if duration_seconds <= 0:
-            continue
-        duration = dotween_seconds_to_beat(duration_seconds, bpm)
-        delay = dotween_seconds_to_beat(safe_float(tween.data.get("delay"), 0.0), bpm)
-        ease = EASE_BY_DOTWEEN_INT.get(int(tween.data.get("easeType", 1) or 1), "Linear")
-        is_relative = bool(tween.data.get("isRelative"))
-        end_v3 = vec3(tween.data.get("endValueV3"))
-
-        forward: dict[str, Any]
-        restore: dict[str, Any]
-        if animation_type == 5:
-            forward = {
-                "scale": [
-                    scale_component(end_v3[0], export.local_scale[0], export.scale[0], is_relative),
-                    scale_component(end_v3[1], export.local_scale[1], export.scale[1], is_relative),
-                ]
-            }
-            restore = {"scale": [round_value(export.scale[0]), round_value(export.scale[1])]}
-        elif animation_type == 4:
-            delta_z = end_v3[2] if is_relative else end_v3[2] - export.local_rotation
-            forward = {"rotationOffset": normalize_angle(export.rotation + delta_z)}
-            restore = {"rotationOffset": normalize_angle(export.rotation)}
-        else:
-            unsupported[animation_type] = unsupported.get(animation_type, 0) + 1
-            continue
-
-        beat = delay
-        while beat < total_beats:
-            floor, angle_offset = beat_to_floor_angle(beat, total_beats)
-            actions.append(
-                {
-                    "floor": floor,
-                    "eventType": "MoveDecorations",
-                    "duration": round_value(duration),
-                    "tag": export.tag,
-                    **forward,
-                    "angleOffset": angle_offset,
-                    "ease": ease,
-                    "eventTag": "2-X DOTweenAnimation approximation",
-                }
-            )
-            restore_beat = beat + duration
-            if restore_beat < total_beats:
-                floor, angle_offset = beat_to_floor_angle(restore_beat, total_beats)
-                actions.append(
-                    {
-                        "floor": floor,
-                        "eventType": "MoveDecorations",
-                        "duration": round_value(duration),
-                        "tag": export.tag,
-                        **restore,
-                        "angleOffset": angle_offset,
-                        "ease": ease,
-                        "eventTag": "2-X DOTweenAnimation approximation",
-                    }
-                )
-            beat += duration * 2.0
-        converted += 1
-
-    if converted:
-        report.add("Decoration mapping", f"2-X DOTweenAnimation: {converted} 个无限 Yoyo 缩放/旋转动画已近似为循环 MoveDecorations。")
-    for animation_type, count in sorted(unsupported.items()):
-        report.add("Unsupported effects", f"2-X DOTweenAnimation animationType={animation_type}: {count} 个组件暂未转换。")
-    return actions
+from .unity_scene import UnityScene, ref_id
 
 
 class TwoXHooks(LevelConversionHooks):
+    """2-X is hand-ruled: static Unity scene first, script-driven loops are reported only."""
+
+    def adjust_decoration(
+        self,
+        scene: UnityScene,
+        go_id: int,
+        decoration: dict[str, Any],
+        report: ConversionReport,
+    ) -> dict[str, Any] | None:
+        path = scene.path_for_gameobject(go_id)
+        original_depth = safe_float(decoration.get("depth"), 0.0)
+
+        if (
+            path.startswith("BG/BGStatic/")
+            or path.startswith("BG/beanstalk_enhance_A_blur")
+            or path.startswith("BG/beanstalk_enhance_C")
+            or path.startswith("BG/Cloud ")
+        ):
+            decoration["depth"] = round_value(320 + original_depth)
+            decoration["lockRotation"] = "Enabled"
+        elif (
+            path.startswith("BG/BG Moving/")
+            or path.startswith("BG/beanstalk_enhance_A")
+            or path.startswith("BG/beanstalk_enhance_B_highres")
+            or path.startswith("BG/pebbles_")
+        ):
+            decoration["depth"] = round_value(180 + original_depth)
+        elif path.startswith("BG/world2_pigstatue_enhance_lowres"):
+            decoration["depth"] = round_value(60 + original_depth)
+
+        if not any("2-X 使用旧 Unity 多相机层级" in item for item in report.items.get("Decoration mapping", [])):
+            report.add(
+                "Decoration mapping",
+                "2-X 使用旧 Unity 多相机层级：BGStatic 约 depth 320 并按 scrBGCamNoRotate 锁定旋转，BGMoving/藤蔓/云约 depth 180，主相机前景雕像约 depth 60；组内仍保留 SpriteRenderer sortingOrder。",
+            )
+        return decoration
+
     def floor_effects(
         self,
         scene: UnityScene,
@@ -249,12 +115,57 @@ class TwoXHooks(LevelConversionHooks):
                         "eventTag": "2-X ffxPlaySound",
                     }
                 )
-                report.add("Sound mapping", f"floor {floor}: 2-X ffxPlaySound -> PlaySound {hit_sound} volume={volume:g}。")
+                report.add("音效映射", f"floor {floor}: 2-X ffxPlaySound -> PlaySound {hit_sound} volume={volume:g}。")
             elif name == "ffxPulseMag":
                 report.add(
                     "Unsupported effects",
                     f"floor {floor}: 2-X ffxPulseMag pulsemag={safe_float(effect.data.get('pulsemag'), 0.0):g} 控制旧相机 hit pulse 强度，vanilla .adofai 暂无直接等价项。",
                 )
+        actions.extend(self._floor_camera_rotations(scene, bpm, floor_speeds, report))
+        return actions
+
+    def _floor_camera_rotations(
+        self,
+        scene: UnityScene,
+        bpm: float,
+        floor_speeds: list[float],
+        report: ConversionReport,
+    ) -> list[dict[str, Any]]:
+        level_maker = next(iter(scene.mono_by_script("scrLevelMaker")), None)
+        camera = next(iter(scene.mono_by_script("scrCamera")), None)
+        if not level_maker or not camera:
+            return []
+
+        duration_seconds = safe_float(camera.data.get("rotdur"), 2.0) or 2.0
+        target_rotation = 0.0
+        actions: list[dict[str, Any]] = []
+        for floor, floor_ref in enumerate(level_maker.data.get("listFloors") or []):
+            floor_component = scene.objects.get(ref_id(floor_ref))
+            if not floor_component:
+                continue
+            rotate_by = safe_float(floor_component.data.get("rotatecamera"), 0.0)
+            if abs(rotate_by) < 0.00001:
+                continue
+            target_rotation = round_value(target_rotation + rotate_by)
+            duration = duration_beats(duration_seconds, bpm, speed_at_floor(floor_speeds, floor))
+            actions.append(
+                {
+                    "floor": floor,
+                    "eventType": "MoveCamera",
+                    "duration": duration,
+                    "relativeTo": "Player",
+                    "position": [0, 0],
+                    "rotation": target_rotation,
+                    "zoom": 100,
+                    "angleOffset": 0,
+                    "ease": "Linear",
+                    "eventTag": "2-X scrFloor.rotatecamera",
+                }
+            )
+            report.add(
+                "Camera mapping",
+                f"floor {floor}: 2-X scrFloor.rotatecamera {rotate_by:g}°，旧 scrCamera.rotdur={duration_seconds:g}s -> MoveCamera rotation={target_rotation:g} duration={duration:g} 拍。",
+            )
         return actions
 
     def scene_animations(
@@ -266,10 +177,47 @@ class TwoXHooks(LevelConversionHooks):
         floor_speeds: list[float],
         report: ConversionReport,
     ) -> list[dict[str, Any]]:
-        actions: list[dict[str, Any]] = []
-        actions.extend(convert_gfx_float(scene, tag_by_go, bpm, floor_speeds, report))
-        actions.extend(convert_dotween_animations(scene, deco_by_go, bpm, floor_speeds, report))
-        return actions
+        skipped_gfx = sum(1 for item in scene.mono_by_script("scrGfxFloat") if item.data.get("m_Enabled", 1))
+        skipped_tween = sum(
+            1
+            for item in scene.mono_by_script("DOTweenAnimation")
+            if item.data.get("m_Enabled", 1) and item.data.get("autoPlay", 1)
+        )
+        if skipped_gfx or skipped_tween:
+            report.add(
+                "Unsupported effects",
+                f"2-X 跳过脚本驱动装饰动画：scrGfxFloat {skipped_gfx} 个，DOTweenAnimation {skipped_tween} 个。叶子/漂浮物这类运行时循环动画不再硬采样成 MoveDecorations。",
+            )
+        return []
+
+    def finalize_level(
+        self,
+        level: dict[str, Any],
+        scene: UnityScene,
+        asset_index,
+        output_dir: Path,
+        used_asset_names: set[str],
+        copied_by_source: dict[Path, str],
+        report: ConversionReport,
+    ) -> None:
+        level_maker2 = next(iter(scene.mono_by_script("scrLevelMaker2")), None)
+        if not level_maker2:
+            return
+        first_straight = (level_maker2.data.get("arrStraight") or [{}])[0]
+        guid = first_straight.get("guid") if isinstance(first_straight, dict) else None
+        asset = asset_index.get(guid)
+        if not asset:
+            report.add("Missing assets", f"2-X 未找到轨道贴图 guid：{guid}")
+            return
+        copied = copied_by_source.get(asset.path)
+        if copied is None:
+            copied = copy_asset(asset.path, output_dir, used_asset_names, report)
+            if copied:
+                copied_by_source[asset.path] = copied
+        if copied:
+            level["settings"]["trackTexture"] = copied
+            level["settings"]["trackTextureScale"] = 1
+            report.add("Music and background", f"2-X 轨道贴图：{asset.project_relative_path} -> {copied}")
 
 
 HOOKS = TwoXHooks()

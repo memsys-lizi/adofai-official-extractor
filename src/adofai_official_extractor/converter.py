@@ -95,6 +95,15 @@ class DecorationExport:
 
 
 class LevelConversionHooks:
+    def adjust_decoration(
+        self,
+        scene: UnityScene,
+        go_id: int,
+        decoration: dict[str, Any],
+        report: ConversionReport,
+    ) -> dict[str, Any] | None:
+        return decoration
+
     def floor_effects(
         self,
         scene: UnityScene,
@@ -105,6 +114,26 @@ class LevelConversionHooks:
         report: ConversionReport,
     ) -> list[dict[str, Any]]:
         return []
+
+    def filter_actions(
+        self,
+        scene: UnityScene,
+        actions: list[dict[str, Any]],
+        report: ConversionReport,
+    ) -> list[dict[str, Any]]:
+        return actions
+
+    def finalize_level(
+        self,
+        level: dict[str, Any],
+        scene: UnityScene,
+        asset_index: AssetIndex,
+        output_dir: Path,
+        used_asset_names: set[str],
+        copied_by_source: dict[Path, str],
+        report: ConversionReport,
+    ) -> None:
+        return None
 
     def scene_animations(
         self,
@@ -382,16 +411,20 @@ def scene_speed_events(floor_speeds: list[float], bpm: float, report: Conversion
     for floor, speed in enumerate(floor_speeds):
         if abs(speed - current) < 0.00001:
             continue
+        relative_multiplier = speed / max(current, 0.00001)
         actions.append(
             {
                 "floor": floor,
                 "eventType": "SetSpeed",
                 "speedType": "Multiplier",
-                "beatsPerMinute": bpm,
-                "bpmMultiplier": round_value(speed),
+                "beatsPerMinute": round_value(bpm),
+                "bpmMultiplier": round_value(relative_multiplier),
             }
         )
-        report.add("Speed mapping", f"floor {floor}: Unity scrFloor.speed {current:g} -> {speed:g}")
+        report.add(
+            "Speed mapping",
+            f"floor {floor}: Unity scrFloor.speed {current:g} -> {speed:g}，导出为相对 SetSpeed multiplier={relative_multiplier:g}",
+        )
         current = speed
     return actions
 
@@ -475,8 +508,10 @@ def extract_decorations(
     used_asset_names: set[str],
     copied_by_source: dict[Path, str],
     report: ConversionReport,
+    hooks: LevelConversionHooks | None = None,
     skip_gameobjects: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, str], dict[int, str], dict[int, DecorationExport]]:
+    hooks = hooks or LevelConversionHooks()
     decorations: list[dict[str, Any]] = []
     tag_by_go: dict[int, str] = {}
     image_by_go: dict[int, str] = {}
@@ -523,8 +558,6 @@ def extract_decorations(
                 lantern_assembly_tags[anchor_go_id] = assembly_tag
             extra_tags.extend([assembly_tag, lantern_phase_tag(anchor_go_id)])
         tag_value = " ".join([tag, *extra_tags])
-        tag_by_go[go_id] = tag
-        image_by_go[go_id] = copied_name
         r, g, b, a = color(renderer.data.get("m_Color"))
         sorting_order = int(renderer.data.get("m_SortingOrder", 0) or 0)
         parallax, old_parallax, relative_to = inherited_parallax(scene, anchor_go_id, report)
@@ -543,39 +576,43 @@ def extract_decorations(
             if lantern
             else pivot_offset_for_custom_sprite(asset)
         )
-        decorations.append(
-            {
-                "floor": 0,
-                "eventType": "AddDecoration",
-                "decorationImage": copied_name,
-                "position": [world_to_ado_units(export_world_x), world_to_ado_units(export_world_y)],
-                "relativeTo": relative_to,
-                "pivotOffset": pivot_offset,
-                "rotation": normalize_angle(world.rotation_z),
-                "scale": [round_value(scale_x), round_value(scale_y)],
-                "tile": [1, 1],
-                "color": f"{clamp_byte(r):02x}{clamp_byte(g):02x}{clamp_byte(b):02x}",
-                "opacity": round_value(a * 100),
-                "depth": -sorting_order,
-                "parallax": parallax,
-                "tag": tag_value,
-                "imageSmoothing": "Enabled",
-                "lockRotation": enabled(lock_rot),
-                "lockScale": enabled(lock_scale),
-                "failHitbox": "Disabled",
-                "failHitboxType": "Box",
-                "failHitboxScale": [100, 100],
-                "failHitboxOffset": [0, 0],
-                "failHitboxRotation": 0,
-                "components": "",
-            }
-        )
+        decoration = {
+            "floor": 0,
+            "eventType": "AddDecoration",
+            "decorationImage": copied_name,
+            "position": [world_to_ado_units(export_world_x), world_to_ado_units(export_world_y)],
+            "relativeTo": relative_to,
+            "pivotOffset": pivot_offset,
+            "rotation": normalize_angle(world.rotation_z),
+            "scale": [round_value(scale_x), round_value(scale_y)],
+            "tile": [1, 1],
+            "color": f"{clamp_byte(r):02x}{clamp_byte(g):02x}{clamp_byte(b):02x}",
+            "opacity": round_value(a * 100),
+            "depth": -sorting_order,
+            "parallax": parallax,
+            "tag": tag_value,
+            "imageSmoothing": "Enabled",
+            "lockRotation": enabled(lock_rot),
+            "lockScale": enabled(lock_scale),
+            "failHitbox": "Disabled",
+            "failHitboxType": "Box",
+            "failHitboxScale": [100, 100],
+            "failHitboxOffset": [0, 0],
+            "failHitboxRotation": 0,
+            "components": "",
+        }
+        adjusted = hooks.adjust_decoration(scene, go_id, decoration, report)
+        if adjusted is None:
+            continue
+        decorations.append(adjusted)
+        tag_by_go[go_id] = tag
+        image_by_go[go_id] = copied_name
         deco_by_go[go_id] = DecorationExport(
             tag=tag,
-            tags=tag_value,
-            scale=(round_value(scale_x), round_value(scale_y)),
+            tags=str(adjusted.get("tag", tag_value)),
+            scale=tuple(adjusted.get("scale", [round_value(scale_x), round_value(scale_y)])),
             local_scale=(local_scale[0], local_scale[1]),
-            rotation=normalize_angle(world.rotation_z),
+            rotation=safe_float(adjusted.get("rotation"), normalize_angle(world.rotation_z)),
             local_rotation=local_rotation_z(transform),
         )
         if len(decorations) <= 40 and (parallax != [0, 0] or relative_to != "Global" or abs(world.rotation_z) > 0.001):
@@ -1166,6 +1203,7 @@ def extract_with_profile(
         used_asset_names,
         copied_by_source,
         report,
+        hooks=hooks,
     )
     actions: list[dict[str, Any]] = []
     actions.extend(initial_bloom_events(scene, report))
@@ -1174,6 +1212,7 @@ def extract_with_profile(
     actions.extend(hooks.floor_effects(scene, floor_lookup, tag_by_go, bpm, floor_speeds, report))
     actions.extend(convert_scene_animation_scripts(scene, tag_by_go, deco_by_go, bpm, floor_speeds, report))
     actions.extend(hooks.scene_animations(scene, tag_by_go, deco_by_go, bpm, floor_speeds, report))
+    actions = hooks.filter_actions(scene, actions, report)
     report_post_processing(scene, report)
 
     actions.sort(key=lambda item: (int(item.get("floor", 0)), str(item.get("eventType", ""))))
@@ -1192,6 +1231,7 @@ def extract_with_profile(
         "actions": actions,
         "decorations": decorations,
     }
+    hooks.finalize_level(level, scene, asset_index, output_dir, used_asset_names, copied_by_source, report)
 
     report.set_stat("old_path_chars", len(old_path_raw))
     report.set_stat("pathData_chars", len(path_data))
